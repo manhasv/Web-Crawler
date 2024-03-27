@@ -10,7 +10,7 @@ DEFAULT_SERVER = "proj5.3700.network"
 DEFAULT_PORT = 443
 
 # Define a custom HTML parser to extract the CSRF token
-class Parser(HTMLParser):
+class CsrfTokenParser(HTMLParser):
 	def __init__(self):
 		super().__init__()
 		self.csrf_token = None
@@ -112,12 +112,12 @@ class Crawler:
 
 		#
 		htmldata = response[response.index("<head>"):]
-		parser = Parser()
+		parser = CsrfTokenParser()
 		parser.feed(htmldata)
-		token = parser.csrf_token
+		csrf_token = parser.csrf_token
 
 		#
-		form_data = {'username': self.username, 'password': self.password, "csrfmiddlewaretoken": token}
+		form_data = {'username': self.username, 'password': self.password, "csrfmiddlewaretoken": csrf_token}
 		encoded_data = urllib.parse.urlencode(form_data)
 		script_path = '/accounts/login/?next=/fakebook/'
 
@@ -138,14 +138,14 @@ class Crawler:
 
 		#keeps track of the secret flags collected
 		flags = []
-		pending = ['https://proj5.3700.network/fakebook/']
-		seen = []
+		unvisitedLinks = ['https://proj5.3700.network/fakebook/']
+		visitedLinks = []
 
 		#While loop until the total number of flags is 5
 		while len(flags) < 5:
 			#temp is the next link to be visited by the crawler
-			temp = pending.pop()  
-			seen.append(temp)
+			temp = unvisitedLinks.pop()  
+			visitedLinks.append(temp)
 			request = self.generate_get_request(temp)
 			received = self.send(request, mysocket) 
 
@@ -153,7 +153,7 @@ class Crawler:
 			status = self.get_status_code(received)
 			if status == 200:
 				body = self.get_html_body(received)
-				bodyParser = Parser()
+				bodyParser = CsrfTokenParser()
 				bodyParser.feed(body)
 
 				if bodyParser.flags:
@@ -162,14 +162,14 @@ class Crawler:
 				for path in bodyParser.newLinks:
 					if '/fakebook/' in path:
 						link = "https://proj5.3700.network" + path
-						if link not in seen and link not in pending:
-							pending.append(link)
+						if link not in visitedLinks and link not in unvisitedLinks:
+							unvisitedLinks.append(link)
 	 
 			if status == 403 or status == 404:
 				continue 
 			if status == 503:
-				pending.append(temp)
-				seen.remove(temp)
+				unvisitedLinks.append(temp)
+				visitedLinks.remove(temp)
 		
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='crawl Fakebook')
