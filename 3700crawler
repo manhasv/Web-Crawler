@@ -8,9 +8,10 @@ from html.parser import HTMLParser
 
 DEFAULT_SERVER = "proj5.3700.network"
 DEFAULT_PORT = 443
+INPUT_SIZE = 1024
 
 # Define a custom HTML parser to extract the CSRF token
-class CsrfTokenParser(HTMLParser):
+class Parser(HTMLParser):
 	def __init__(self):
 		super().__init__()
 		self.csrf_token = None
@@ -41,8 +42,8 @@ class Crawler:
 
 		self.cookies = []
 	
-	# 
-	def get_cookie(self, data):
+	# Given data from the website, return the cookie
+	def retrieve_cookie(self, data):
 		cookies = []
 		index = 0
 		while True:
@@ -57,20 +58,22 @@ class Crawler:
 				break
 		return cookies
 				
-	# 
-	def get_status_code(self, data):
+	# From given data, retuen the status code
+	def retrieve_status_code(self, data):
 		http_index = data.index("HTTP")
 		status_code = data[http_index + 9 : http_index + 12]
 		# Extract only the numeric part of the status code
 		status_code = ''.join(filter(str.isdigit, status_code))
 		return int(status_code)
 	
-	# 
+	# Get HTML body from the data
 	def get_html_body(self, data):
 		firstIndex = data.index("<body>")
 		secondIndex = data.index("</body>") + 7
 		return data[firstIndex:secondIndex]
 
+	# Generate a GET request with path, host, and cookies and 
+	# Connection Keep Alive to maintain the connection
 	def generate_get_request(self, link):
 		link = urllib.parse.urlparse(link)
 		request = f"GET {link.path} HTTP/1.1\r\n" \
@@ -79,81 +82,43 @@ class Crawler:
 				  f"Connection: Keep-Alive\r\nKeep-Alive:timeout=10,max=1000\r\n\r\n"
 		return request.encode('ascii')
 
-	def send(self, request, mysocket):
-		mysocket.send(request)
-		response = mysocket.recv(1024).decode('ascii')
+	# Send a request and return the response
+	def send(self, request, webSocket):
+		webSocket.send(request)
+		response = webSocket.recv(INPUT_SIZE).decode('ascii')
 		while "</html>" not in response:
-			temp = mysocket.recv(1024)
+			temp = webSocket.recv(INPUT_SIZE)
 			response += temp.decode('ascii')
 		return response
-	 
-	def run(self):
-		#initial request 
-		request = "GET /accounts/login/?next=/fakebook/ HTTP/1.1\r\n" \
-				  f"Host: {DEFAULT_SERVER}:{DEFAULT_PORT}\r\n" \
-				  f"Connection: Keep-Alive\r\nKeep-Alive:timeout=10,max=1000\r\n\r\n"
-	   
-		#socket creation and wrap it with TLS
-		mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		mysocket.connect((self.server, self.port))
+
+	# create a socket from cs3700 server and wrap it with TLS
+	def create_socket(self):
+		webSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		webSocket.connect((self.server, self.port))
 		context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
-		mysocket = context.wrap_socket(mysocket, server_hostname=self.server)
+		webSocket = context.wrap_socket(webSocket, server_hostname=self.server)
+		return webSocket
 
-		#sends the initial request
-		mysocket.send(request.encode('ascii'))
-		response = ""
-		
-		#receives the response until theres nothing left to receive
-		response = mysocket.recv(1024).decode('ascii')
-		while "</html>" not in response:
-			temp = mysocket.recv(1024)
-			response += temp.decode('ascii')
-		self.cookies = self.get_cookie(response)
-
-		#
-		htmldata = response[response.index("<head>"):]
-		parser = CsrfTokenParser()
-		parser.feed(htmldata)
-		csrf_token = parser.csrf_token
-
-		#
-		form_data = {'username': self.username, 'password': self.password, "csrfmiddlewaretoken": csrf_token}
-		encoded_data = urllib.parse.urlencode(form_data)
-		script_path = '/accounts/login/?next=/fakebook/'
-
-		#POST request sent to the server 
-		request = f'POST {script_path} HTTP/1.1\r\n' \
-		  f'Host: {DEFAULT_SERVER}:{DEFAULT_PORT}\r\n' \
-		  f'Content-Type: application/x-www-form-urlencoded\r\n' \
-		  f'Content-Length: {len(encoded_data)}\r\n' \
-		  f'Referer: https://{DEFAULT_SERVER}/fakebook/\r\n' \
-		  f'Cookie: {self.cookies[0]}; {self.cookies[1]}\r\n\r\n' \
-		  f'{encoded_data}\r\n\r\n'
-		mysocket.send(request.encode('ascii'))
-		response = ""
-		
-		#receives the header respsonse
-		response = mysocket.recv(1024).decode('ascii') 
-		self.cookies = self.get_cookie(response)
-
+	# Main function which will crawls on fakebook and find the flags
+	def crawl(self, webSocket):
 		#keeps track of the secret flags collected
 		flags = []
-		unvisitedLinks = ['https://proj5.3700.network/fakebook/']
-		visitedLinks = []
+		pending = ['https://proj5.3700.network/fakebook/']
+		seen = []
 
 		#While loop until the total number of flags is 5
 		while len(flags) < 5:
 			#temp is the next link to be visited by the crawler
-			temp = unvisitedLinks.pop()  
-			visitedLinks.append(temp)
+			temp = pending.pop()  
+			seen.append(temp)
 			request = self.generate_get_request(temp)
-			received = self.send(request, mysocket) 
+			received = self.send(request, webSocket) 
 
 			#extracts the status of the response
-			status = self.get_status_code(received)
+			status = self.retrieve_status_code(received)
 			if status == 200:
 				body = self.get_html_body(received)
-				bodyParser = CsrfTokenParser()
+				bodyParser = Parser()
 				bodyParser.feed(body)
 
 				if bodyParser.flags:
@@ -162,14 +127,59 @@ class Crawler:
 				for path in bodyParser.newLinks:
 					if '/fakebook/' in path:
 						link = "https://proj5.3700.network" + path
-						if link not in visitedLinks and link not in unvisitedLinks:
-							unvisitedLinks.append(link)
+						if link not in seen and link not in pending:
+							pending.append(link)
 	 
 			if status == 403 or status == 404:
 				continue 
 			if status == 503:
-				unvisitedLinks.append(temp)
-				visitedLinks.remove(temp)
+				pending.append(temp)
+				seen.remove(temp)
+
+	def run(self):
+	   	#create socket and request
+		webSocket = self.create_socket()
+
+		# First half to work with getting to the fakebook
+		# craft the initial GET request 
+		request = "GET /accounts/login/?next=/fakebook/ HTTP/1.1\r\n" \
+				  f"Host: {DEFAULT_SERVER}:{DEFAULT_PORT}\r\n" \
+				  f"Connection: Keep-Alive\r\nKeep-Alive:timeout=10,max=1000\r\n\r\n"
+		webSocket.send(request.encode('ascii'))
+		response = ""
+		response = webSocket.recv(INPUT_SIZE).decode('ascii')
+		while "</html>" not in response:
+			temp = webSocket.recv(INPUT_SIZE)
+			response += temp.decode('ascii')
+		self.cookies = self.retrieve_cookie(response)
+
+		# HTML Parser
+		htmldata = response[response.index("<head>"):]
+		parser = Parser()
+		parser.feed(htmldata)
+		csrf_token = parser.csrf_token
+
+		# Logging in
+		user_info = {'username': self.username, 'password': self.password, "csrfmiddlewaretoken": csrf_token}
+		encoded = urllib.parse.urlencode(user_info)
+		loginsite_path = '/accounts/login/?next=/fakebook/'
+
+		# Second half 
+		#POST request sent to the server 
+		request = f'POST {loginsite_path} HTTP/1.1\r\n' \
+		  f'Host: {DEFAULT_SERVER}:{DEFAULT_PORT}\r\n' \
+		  f'Content-Type: application/x-www-form-urlencoded\r\n' \
+		  f'Content-Length: {len(encoded)}\r\n' \
+		  f'Referer: https://{DEFAULT_SERVER}/fakebook/\r\n' \
+		  f'Cookie: {self.cookies[0]}; {self.cookies[1]}\r\n\r\n' \
+		  f'{encoded}\r\n\r\n'
+
+		# Set up and start crawling
+		webSocket.send(request.encode('ascii'))
+		response = ""
+		response = webSocket.recv(INPUT_SIZE).decode('ascii') 
+		self.cookies = self.retrieve_cookie(response)
+		self.crawl(webSocket)
 		
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='crawl Fakebook')
